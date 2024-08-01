@@ -53,7 +53,7 @@ pydantic==1.10.17
 pydeck==0.9.1
 Pygments==2.18.0
 pypdfium2==4.30.0
-pytesseract==0.3.10
+pytesseract
 python-dateutil==2.9.0.post0
 python-dotenv==1.0.1
 pytz==2024.1
