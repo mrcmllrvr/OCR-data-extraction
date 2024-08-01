@@ -126,7 +126,7 @@ def extract_structured_data(content: str):
 
 # Streamlit app
 def main():
-    st.header("PDF and Image Extraction :bird:")
+    st.header("📜Land Titles Data Extraction")
 
     uploaded_files = st.file_uploader("Upload file(s):", accept_multiple_files=True, type=["pdf", "jpg", "jpeg"])
 
