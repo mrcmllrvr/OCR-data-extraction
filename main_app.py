@@ -19,7 +19,7 @@ import openpyxl
 
 load_dotenv()
 
-st.set_page_config(page_title="PDF and Image Extraction", page_icon=":bird:", layout="wide")
+st.set_page_config(page_title="📜Land Titles Data Extraction", page_icon=":bird:", layout="wide")
 
 # Convert PDF file into images via pypdfium2
 def convert_pdf_to_images(file_path, scale=500/72):
