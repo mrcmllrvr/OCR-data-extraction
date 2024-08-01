@@ -5,7 +5,7 @@ pandas
 openpyxl
 Pillow
 requests
-opencv-python
+opencv-python-headless
 numpy
 python-dotenv
 langchain==0.0.152
