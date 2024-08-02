@@ -1,9 +1,6 @@
 import uuid
-from langchain.chat_models import ChatOpenAI
-from langchain.prompts import PromptTemplate
-from langchain.chains.llm import LLMChain
+import openai
 from dotenv import load_dotenv
-from pytesseract import image_to_string
 from PIL import Image
 from io import BytesIO
 import pypdfium2 as pdfium
@@ -13,84 +10,92 @@ import pandas as pd
 import json
 import os
 import io
+import base64
 import cv2
 import numpy as np
-import openpyxl
 
 load_dotenv()
 
-st.set_page_config(page_title="📜Land Titles Data Extraction", page_icon=":bird:", layout="wide")
+st.set_page_config(page_title="PDF and Image Extraction", page_icon=":bird:", layout="wide")
+
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 # Convert PDF file into images via pypdfium2
 def convert_pdf_to_images(file_path, scale=500/72):
-    print(f"Processing PDF at path: {file_path}")
     pdf_file = pdfium.PdfDocument(file_path)
-
     page_indices = [i for i in range(len(pdf_file))]
-
     renderer = pdf_file.render(
         pdfium.PdfBitmap.to_pil,
         page_indices=page_indices,
         scale=scale,
     )
-
     final_images = []
     for i, image in zip(page_indices, renderer):
         image_byte_array = BytesIO()
         image.save(image_byte_array, format='jpeg', optimize=True)
         image_byte_array = image_byte_array.getvalue()
         final_images.append(dict({i: image_byte_array}))
-
     if hasattr(pdf_file, "close"):
         pdf_file.close()
-
     return final_images
 
 # Preprocess image
 def preprocess_image(image):
-    # Convert PIL Image to OpenCV format
     open_cv_image = np.array(image)
     open_cv_image = cv2.cvtColor(open_cv_image, cv2.COLOR_RGB2BGR)
-
-    # Convert to grayscale
     img = cv2.cvtColor(open_cv_image, cv2.COLOR_BGR2GRAY)
-
-    # Remove borders
     contours, hierarchy = cv2.findContours(img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if contours:
         cntsSorted = sorted(contours, key=lambda x: cv2.contourArea(x), reverse=True)
-        cnt = cntsSorted[0]  # Largest contour
+        cnt = cntsSorted[0]
         x, y, w, h = cv2.boundingRect(cnt)
         img = img[y:y+h, x:x+w]
-
-    # Apply binary threshold
     _, result = cv2.threshold(img, 210, 235, cv2.THRESH_BINARY)
-    # Apply adaptive threshold
     adaptive_result = cv2.adaptiveThreshold(
         result, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 41, 5
     )
-
-    # Convert back to PIL Image
     processed_image = Image.fromarray(adaptive_result)
-    
     return processed_image
 
-# Extract text from images via pytesseract
-def extract_text_from_img(list_dict_final_images):
-    image_content = []
+# Encode image to base64
+def encode_image(image_bytes):
+    return base64.b64encode(image_bytes).decode('utf-8')
 
+# Extract raw text from images via OpenAI Vision
+def extract_raw_text_from_img_openai(list_dict_final_images):
+    raw_texts = []
     for data in list_dict_final_images:
         image_bytes = list(data.values())[0]
         image = Image.open(io.BytesIO(image_bytes))
-        processed_image = preprocess_image(image)  # Preprocess the image
-        raw_text = str(image_to_string(processed_image, config='--oem 1 --psm 4'))
-        image_content.append((processed_image, raw_text))
+        processed_image = preprocess_image(image)
 
-    return image_content
+        buffered = BytesIO()
+        processed_image.save(buffered, format="JPEG")
+        encoded_image = encode_image(buffered.getvalue())
+        
+        response = openai.ChatCompletion.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": """
+                        Please extract all the text from this image. Just output the extracted text from the document and no need for conversational messages.
+                        """.strip()},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{encoded_image}"}}
+                    ]
+                }
+            ],
+            max_tokens=2048
+        )
+        
+        raw_text = response['choices'][0]['message']['content']
+        raw_texts.append((encoded_image, raw_text))
+
+    return raw_texts
 
 # Extract structured info from text via LLM
 def extract_structured_data(content: str):
-    llm = ChatOpenAI(temperature=0, model="gpt-3.5-turbo")
     template = """
     You are an expert at extracting structured information from unstructured text. Please extract the following information:
 
@@ -114,19 +119,23 @@ def extract_structured_data(content: str):
     Land Description: 
     Land Area:
     """
-
-    prompt = PromptTemplate(
-        input_variables=["content"],
-        template=template,
+    
+    response = openai.ChatCompletion.create(
+        model="gpt-4-turbo",
+        messages=[
+            {
+                "role": "user",
+                "content": template.format(content=content)
+            }
+        ],
+        max_tokens=500
     )
-
-    chain = LLMChain(llm=llm, prompt=prompt)
-    results = chain.run(content=content)
-    return results
+    
+    return response.choices[0].message['content'].strip()
 
 # Streamlit app
 def main():
-    st.header("📜Land Titles Data Extraction")
+    st.header("📜 Land Titles Data Extraction")
 
     uploaded_files = st.file_uploader("Upload file(s):", accept_multiple_files=True, type=["pdf", "jpg", "jpeg"])
 
@@ -146,14 +155,18 @@ def main():
                 else:
                     raise ValueError("Unsupported file format")
 
-                processed_content = extract_text_from_img(images_list)
-                for idx, (processed_image, raw_text) in enumerate(processed_content):
-                    cols = st.columns(2)
+                raw_texts = extract_raw_text_from_img_openai(images_list)
+                for idx, (encoded_image, raw_text) in enumerate(raw_texts):
+                    cols = st.columns(3)
                     with cols[0]:
-                        st.image(processed_image, caption=f'Processed Image - {file.name}', use_column_width=True)
-                    
+                        st.image(f"data:image/jpeg;base64,{encoded_image}", caption=f'Processed Image - {file.name}', use_column_width=True)
+
                     with cols[1]:
-                        st.subheader("Extracted Information")
+                        st.subheader("Raw Extracted Information")
+                        st.text_area("Raw Text", value=raw_text, height=200, key=f'raw_text_{file.name}_{idx}')
+
+                    with cols[2]:
+                        st.subheader("Structured Information")
                         json_key = f'{file.name}_{idx}_json'
                         initial_value = """
                             Transfer Certificate of Title Number: 
@@ -195,7 +208,7 @@ def main():
                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
                     df.to_excel(writer, index=False, columns=["Transfer Certificate of Title Number", "Landowner", "Location", "Land Description", "Land Area"])
                 output.seek(0)
-                
+
                 st.download_button(
                     label="Download extracted data",
                     data=output,
